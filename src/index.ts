@@ -1,40 +1,71 @@
-/**
- * Welcome to Cloudflare Workers!
- *
- * This is a template for a Scheduled Worker: a Worker that can run on a
- * configurable interval:
- * https://developers.cloudflare.com/workers/platform/triggers/cron-triggers/
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Run `curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"` to see your Worker in action
- * - Run `npm run deploy` to publish your Worker
- *
- * Bind resources to your Worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
+import Redis from 'ioredis'
+import * as cron from 'node-cron'
+import dotenv from 'dotenv'
 
-export default {
-	async fetch(req) {
-		const url = new URL(req.url);
-		url.pathname = '/__scheduled';
-		url.searchParams.append('cron', '* * * * *');
-		return new Response(`To test the scheduled handler, ensure you have used the "--test-scheduled" then try running "curl ${url.href}".`);
-	},
+dotenv.config()
 
-	// The scheduled handler is invoked at the interval set in our wrangler.jsonc's
-	// [[triggers]] configuration.
-	async scheduled(event, env, ctx): Promise<void> {
-		// A Cron Trigger can make requests to other endpoints on the Internet,
-		// publish to a Queue, query a D1 Database, and much more.
-		//
-		// We'll keep it simple and make an API call to a Cloudflare API:
-		let resp = await fetch('https://api.cloudflare.com/client/v4/ips');
-		let wasSuccessful = resp.ok ? 'success' : 'fail';
+interface IssData {
+  message: string,
+  iss_position: {
+    latitude: string,
+    longitude: string,
+  }
+  timestamp: number
+}
 
-		// You could store this result in KV, write to a D1 Database, or publish to a Queue.
-		// In this template, we'll just log the result:
-		console.log(`trigger fired at ${event.cron}: ${wasSuccessful}`);
-	},
-} satisfies ExportedHandler<Env>;
+const getRedisClient = () => {
+  const REDIS_HOST = process.env.REDIS_HOST
+  const REDIS_PORT = process.env.REDIS_PORT
+  const REDIS_PASSWORD = process.env.REDIS_PASSWORD
+
+  const redis = new Redis({
+    host: REDIS_HOST,
+    port: Number(REDIS_PORT),
+    password: REDIS_PASSWORD
+  })
+
+  return redis
+}
+
+const main = async () => {
+  try {
+    const response = await fetch("http://api.open-notify.org/iss-now.json")
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    const body = await response.json() as IssData
+    const redis = getRedisClient()
+    const timestamp = Date.now()
+
+    // Store the latest position with 24h TTL
+    await redis.setex("iss:latest", 86400, JSON.stringify({
+      ...body.iss_position,
+      timestamp
+    }))
+
+    // Store position in a list for path tracking (keep last 4000 positions)
+    await redis.lpush("iss:path", JSON.stringify({
+      ...body.iss_position,
+      timestamp
+    }))
+
+    // Trim the list to keep only last 4000 positions
+    await redis.ltrim("iss:path", 0, 4000)
+
+    console.log(`ISS position updated: ${body.iss_position.latitude}, ${body.iss_position.longitude}`)
+
+    await redis.quit()
+  } catch (error) {
+    console.error('Error updating ISS position:', error)
+  }
+}
+
+// Schedule cron job to run every 5 seconds
+cron.schedule('*/5 * * * * *', () => {
+  console.log('Running ISS tracker at:', new Date().toISOString())
+  main()
+})
+
+console.log('ISS Tracker cron job started - running every 5 seconds')

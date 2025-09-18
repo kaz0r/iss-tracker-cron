@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  iss-tracker:
+    build: .
+    container_name: iss-tracker-cron
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - iss-network
+    # Uncomment if you need to expose ports
+    # ports:
+    #   - "3000:3000"
+
+networks:
+  iss-network:
+    driver: bridge
+
+volumes:
+  logs:
