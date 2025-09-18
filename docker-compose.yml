@@ -11,15 +11,7 @@ services:
       - NODE_ENV=production
     volumes:
       - ./logs:/app/logs
-    networks:
-      - iss-network
+    network_mode: "host"
     # Uncomment if you need to expose ports
     # ports:
     #   - "3000:3000"
-
-networks:
-  iss-network:
-    driver: bridge
-
-volumes:
-  logs:
